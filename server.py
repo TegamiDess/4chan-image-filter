@@ -1,0 +1,231 @@
+import os
+import random
+import base64
+import io
+import json
+import threading
+import imagehash
+import torch
+from PIL import Image
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from transformers import CLIPProcessor, CLIPModel
+from pybktree import BKTree
+
+BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
+DATA_FOLDER = os.path.join(BASE_FOLDER, "data")
+REPLACEMENT_FOLDER = os.path.join(DATA_FOLDER, "replacements")
+STYLE_FOLDER = os.path.join(DATA_FOLDER, "style")
+HASH_EXPORT_PATH = os.path.join(DATA_FOLDER, "hashes.json")
+HASH_SIZE = 8
+THRESHOLD = 10
+STYLE_THRESHOLD = 0.74
+VALID_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
+MIME_MAP = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp'}
+
+app = Flask(__name__)
+CORS(app)
+
+hash_lock = threading.Lock()
+clip_lock = threading.Lock()
+
+banned_hash_set = set()
+banned_hash_list = []
+bk_tree = None
+style_embeddings = None
+
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+print(f"[Init] Using device: {device.upper()}")
+
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+clip_model.eval()
+
+
+def hamming_distance(a, b):
+    return imagehash.hex_to_hash(a) - imagehash.hex_to_hash(b)
+
+
+def get_clip_embedding(img):
+    inputs = clip_processor(images=img, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = clip_model.get_image_features(**inputs)
+        emb = outputs if isinstance(outputs, torch.Tensor) else getattr(outputs, 'image_embeds', outputs.pooler_output)
+    emb = emb / emb.norm(dim=-1, keepdim=True)
+    return emb.cpu()
+
+
+def get_images(folder):
+    if not os.path.exists(folder):
+        return []
+    return [os.path.join(folder, f) for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in VALID_EXTENSIONS]
+
+
+def save_hashes_to_json():
+    with open(HASH_EXPORT_PATH, 'w') as f:
+        json.dump({"hashes": banned_hash_list}, f)
+
+
+def add_hash(h):
+    with hash_lock:
+        if h not in banned_hash_set:
+            banned_hash_set.add(h)
+            banned_hash_list.append(h)
+            bk_tree.add(h)
+            save_hashes_to_json()
+
+
+def load_hashes():
+    global banned_hash_set, banned_hash_list, bk_tree
+    banned_hash_set = set()
+    banned_hash_list = []
+
+    if os.path.exists(HASH_EXPORT_PATH):
+        try:
+            with open(HASH_EXPORT_PATH, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    banned_hash_list = data.get('hashes', [])
+                    banned_hash_set = set(banned_hash_list)
+        except Exception as e:
+            print(f"[Import] Failed to read hashes.json: {e}")
+
+    new_count = 0
+    top_level_images = [os.path.join(DATA_FOLDER, f) for f in os.listdir(DATA_FOLDER)
+                        if os.path.isfile(os.path.join(DATA_FOLDER, f)) and os.path.splitext(f)[1].lower() in VALID_EXTENSIONS]
+
+    for path in top_level_images:
+        try:
+            with Image.open(path) as img:
+                h = str(imagehash.dhash(img, hash_size=HASH_SIZE))
+                if h not in banned_hash_set:
+                    banned_hash_set.add(h)
+                    banned_hash_list.append(h)
+                    new_count += 1
+        except Exception as e:
+            print(f"Error reading {path}: {e}")
+
+    bk_tree = BKTree(hamming_distance, banned_hash_list)
+    save_hashes_to_json()
+
+    if new_count > 0:
+        for path in top_level_images:
+            try:
+                os.remove(path)
+            except Exception as e:
+                print(f"Error deleting {path}: {e}")
+
+    print(f"Loaded {len(banned_hash_list)} hashes ({new_count} new)")
+
+
+def load_style_embeddings():
+    global style_embeddings
+    embs = []
+    for path in get_images(STYLE_FOLDER):
+        try:
+            img = Image.open(path).convert("RGB")
+            with clip_lock:
+                embs.append(get_clip_embedding(img))
+            img.close()
+        except Exception as e:
+            print(f"[CLIP] Error loading {path}: {e}")
+    style_embeddings = torch.cat(embs, dim=0) if embs else None
+    print(f"[CLIP] Loaded {len(embs)} style embeddings.")
+
+
+def decode_b64_image(data):
+    if ',' in data:
+        data = data.split(',', 1)[1]
+    return Image.open(io.BytesIO(base64.b64decode(data)))
+
+
+@app.route('/check', methods=['POST'])
+def check():
+    thumb_b64 = request.json.get('thumbnail_b64', '')
+    try:
+        img = decode_b64_image(thumb_b64)
+    except Exception:
+        return jsonify({"swap": False})
+
+    try:
+        h = str(imagehash.dhash(img, hash_size=HASH_SIZE))
+        with hash_lock:
+            matches = bk_tree.find(h, THRESHOLD)
+        if matches:
+            print(f"[Hash] Match found: {h}")
+            img.close()
+            return jsonify({"swap": True, "method": "hash"})
+    except Exception as e:
+        print(f"[Hash] Error: {e}")
+
+    try:
+        rgb = img.convert("RGB")
+        with clip_lock:
+            emb = get_clip_embedding(rgb)
+        if style_embeddings is not None:
+            sims = (emb @ style_embeddings.T).squeeze(0)
+            max_sim = sims.max().item()
+            if max_sim > STYLE_THRESHOLD:
+                print(f"[CLIP] Match found, similarity: {max_sim:.3f}")
+                img.close()
+                return jsonify({"swap": True, "method": "style", "similarity": max_sim})
+    except Exception as e:
+        print(f"[CLIP] Error: {e}")
+
+    img.close()
+    return jsonify({"swap": False})
+
+
+@app.route('/reload_hashes', methods=['POST'])
+def reload_hashes():
+    with hash_lock:
+        load_hashes()
+    with clip_lock:
+        load_style_embeddings()
+    return jsonify({"count": len(banned_hash_list), "styles": len(style_embeddings) if style_embeddings is not None else 0})
+
+
+@app.route('/random_image_base64')
+def random_image_base64():
+    files = get_images(REPLACEMENT_FOLDER)
+    if not files:
+        return jsonify({"error": "No images found"}), 404
+    path = random.choice(files)
+    ext = os.path.splitext(path)[1].lower()
+    mime = MIME_MAP.get(ext, ext.lstrip('.'))
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    return jsonify({"filename": os.path.basename(path), "data": f"data:image/{mime};base64,{b64}"})
+
+
+@app.route('/')
+def index():
+    return jsonify({"status": "running", "hashes": len(banned_hash_list), "styles": len(style_embeddings) if style_embeddings is not None else 0})
+
+
+@app.route('/save_thumbnail', methods=['POST'])
+def save_thumbnail():
+    thumb_b64 = request.json.get('thumbnail_b64', '')
+    try:
+        img = decode_b64_image(thumb_b64)
+        h = str(imagehash.dhash(img, hash_size=HASH_SIZE))
+        img.close()
+        add_hash(h)
+        return jsonify({"saved": h, "count": len(banned_hash_list)})
+    except Exception as e:
+        print(f"[Save] Failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+    load_hashes()
+    load_style_embeddings()
+    try:
+        from waitress import serve
+        print("[Server] Starting with Waitress on http://127.0.0.1:5150")
+        serve(app, host='127.0.0.1', port=5150)
+    except ImportError:
+        print("[Server] Waitress not installed, falling back to Flask dev server")
+        app.run(port=5150, threaded=True)
