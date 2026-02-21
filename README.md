@@ -98,6 +98,8 @@ Drop reference images into `data/style/`. The server computes a CLIP embedding f
 
 "Style matching" here means "CLIP visual similarity to your reference images" — it is not a general aesthetic classifier. The quality of results depends entirely on what you put in the folder.
 
+This is particularly effective against AI-generated images that mimic a specific artist's style. Drop a few examples of the artist's work into data/style/ and CLIP will flag visually similar outputs, even if they've never been posted before. Unlike hash matching, which only catches known images, style matching generalizes — one set of references can catch an unlimited number of new generations in that style.
+
 ### 5. Start the server
 
 ```bash
