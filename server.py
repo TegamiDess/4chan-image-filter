@@ -13,15 +13,20 @@ from transformers import CLIPProcessor, CLIPModel
 from pybktree import BKTree
 
 BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
-DATA_FOLDER = os.path.join(BASE_FOLDER, "data")
-REPLACEMENT_FOLDER = os.path.join(DATA_FOLDER, "replacements")
+DATA_FOLDER = os.path.join(BASE_FOLDER, "gbfg")
+REPLACEMENT_FOLDER = os.path.join(DATA_FOLDER, "Io")
 STYLE_FOLDER = os.path.join(DATA_FOLDER, "style")
 HASH_EXPORT_PATH = os.path.join(DATA_FOLDER, "hashes.json")
 HASH_SIZE = 8
 THRESHOLD = 10
-STYLE_THRESHOLD = 0.74
 VALID_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 MIME_MAP = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp'}
+
+STYLE_CATEGORIES = {
+    "slop1":       {"folder": "style/slop1",       "threshold": 0.76},
+    "slop2": {"folder": "style/slop2",  "threshold": 0.86},
+    "furpedo":  {"folder": "style/furpedo",   "threshold": 0.86},
+}
 
 app = Flask(__name__)
 CORS(app)
@@ -32,7 +37,7 @@ clip_lock = threading.Lock()
 banned_hash_set = set()
 banned_hash_list = []
 bk_tree = None
-style_embeddings = None
+style_data = {}
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"[Init] Using device: {device.upper()}")
@@ -47,13 +52,22 @@ def hamming_distance(a, b):
 
 
 def get_clip_embedding(img):
-    inputs = clip_processor(images=img, return_tensors="pt")
+    inputs = clip_processor(images=img, return_tensors="pt", input_data_format="channels_last")
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
         outputs = clip_model.get_image_features(**inputs)
         emb = outputs if isinstance(outputs, torch.Tensor) else getattr(outputs, 'image_embeds', outputs.pooler_output)
     emb = emb / emb.norm(dim=-1, keepdim=True)
     return emb.cpu()
+
+
+def clip_check(emb):
+    for name, cat in style_data.items():
+        sims = (emb @ cat["embeddings"].T).squeeze(0)
+        max_sim = sims.max().item()
+        if max_sim > cat["threshold"]:
+            return True, name, max_sim
+    return False, None, 0.0
 
 
 def get_images(folder):
@@ -121,18 +135,25 @@ def load_hashes():
 
 
 def load_style_embeddings():
-    global style_embeddings
-    embs = []
-    for path in get_images(STYLE_FOLDER):
-        try:
-            img = Image.open(path).convert("RGB")
-            with clip_lock:
-                embs.append(get_clip_embedding(img))
-            img.close()
-        except Exception as e:
-            print(f"[CLIP] Error loading {path}: {e}")
-    style_embeddings = torch.cat(embs, dim=0) if embs else None
-    print(f"[CLIP] Loaded {len(embs)} style embeddings.")
+    global style_data
+    style_data = {}
+    for name, cfg in STYLE_CATEGORIES.items():
+        folder = os.path.join(DATA_FOLDER, cfg["folder"])
+        embs = []
+        for path in get_images(folder):
+            try:
+                img = Image.open(path).convert("RGB")
+                with clip_lock:
+                    embs.append(get_clip_embedding(img))
+                img.close()
+            except Exception as e:
+                print(f"[CLIP] Error loading {path}: {e}")
+        if embs:
+            style_data[name] = {
+                "embeddings": torch.cat(embs, dim=0),
+                "threshold": cfg["threshold"]
+            }
+        print(f"[CLIP] {name}: {len(embs)} references, threshold {cfg['threshold']}")
 
 
 def decode_b64_image(data):
@@ -164,13 +185,11 @@ def check():
         rgb = img.convert("RGB")
         with clip_lock:
             emb = get_clip_embedding(rgb)
-        if style_embeddings is not None:
-            sims = (emb @ style_embeddings.T).squeeze(0)
-            max_sim = sims.max().item()
-            if max_sim > STYLE_THRESHOLD:
-                print(f"[CLIP] Match found, similarity: {max_sim:.3f}")
-                img.close()
-                return jsonify({"swap": True, "method": "style", "similarity": max_sim})
+        matched, category, sim = clip_check(emb)
+        if matched:
+            print(f"[CLIP] {category} match, similarity: {sim:.3f}")
+            img.close()
+            return jsonify({"swap": True, "method": "style", "category": category, "similarity": sim})
     except Exception as e:
         print(f"[CLIP] Error: {e}")
 
@@ -184,7 +203,10 @@ def reload_hashes():
         load_hashes()
     with clip_lock:
         load_style_embeddings()
-    return jsonify({"count": len(banned_hash_list), "styles": len(style_embeddings) if style_embeddings is not None else 0})
+    return jsonify({
+        "count": len(banned_hash_list),
+        "categories": {name: len(cat["embeddings"]) for name, cat in style_data.items()}
+    })
 
 
 @app.route('/random_image_base64')
@@ -202,7 +224,11 @@ def random_image_base64():
 
 @app.route('/')
 def index():
-    return jsonify({"status": "running", "hashes": len(banned_hash_list), "styles": len(style_embeddings) if style_embeddings is not None else 0})
+    return jsonify({
+        "status": "running",
+        "hashes": len(banned_hash_list),
+        "categories": {name: {"references": len(cat["embeddings"]), "threshold": cat["threshold"]} for name, cat in style_data.items()}
+    })
 
 
 @app.route('/save_thumbnail', methods=['POST'])

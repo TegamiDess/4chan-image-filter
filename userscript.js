@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         4chan Local dHash Swapper/TSD
 // @namespace    http://tampermonkey.net/
-// @version      1
+// @version      5.8
 // @description  Swap matched images via server-side dHash + CLIP
 // @match        *://boards.4chan.org/*
 // @match        *://boards.4channel.org/*
@@ -10,6 +10,7 @@
 // @connect      litter.catbox.moe
 // @connect      arch.b4k.dev
 // @connect      i.4cdn.org
+// @connect      4cdn.org
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
