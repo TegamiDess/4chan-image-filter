@@ -100,11 +100,13 @@ If the folder is empty or missing, matched posts are **removed entirely** instea
 
 Drop reference images into subfolders within data/style/. Each subfolder corresponds to a category defined in STYLE_CATEGORIES at the top of server.py, and each category has its own CLIP similarity threshold.
 
+```
 STYLE_CATEGORIES = {
     "category1": {"folder": "style/CLIP1", "threshold": 0.76},
     "category2": {"folder": "style/CLIP2", "threshold": 0.86},
     "category3": {"folder": "style/CLIP3", "threshold": 0.86},
 }
+```
 
 Add or remove categories by editing this dictionary. Each entry needs a subfolder path (relative to data/) and a cosine similarity threshold. Higher = stricter.
 
