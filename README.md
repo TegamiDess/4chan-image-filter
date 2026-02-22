@@ -26,9 +26,13 @@ filter/
 ├── userscript.js
 ├── requirements.txt
 └── data/
-    ├── replacements/   ← images to swap in (png/jpg/gif/webp/mp4/webm)
-    ├── style/          ← reference images for CLIP style matching
+    ├── replacements/   ← images to swap in (png/jpg/gif/webp)
+    ├── style/
+    │   ├── CLIP1/      ← reference images for style category 1
+    │   ├── CLIP2/      ← reference images for style category 2
+    │   └── CLIP3/      ← reference images for style category 3
     └── hashes.json     ← auto-generated hash database
+
 ```
 
 ---
@@ -94,9 +98,17 @@ If the folder is empty or missing, matched posts are **removed entirely** instea
 
 ### 4. Add style references (optional)
 
-Drop reference images into `data/style/`. The server computes a CLIP embedding for each one at startup, then compares incoming thumbnails against them by cosine similarity. This catches images that are visually similar in style/content even if the hash doesn't match.
+Drop reference images into subfolders within data/style/. Each subfolder corresponds to a category defined in STYLE_CATEGORIES at the top of server.py, and each category has its own CLIP similarity threshold.
 
-"Style matching" here means "CLIP visual similarity to your reference images" — it is not a general aesthetic classifier. The quality of results depends entirely on what you put in the folder.
+STYLE_CATEGORIES = {
+    "category1": {"folder": "style/CLIP1", "threshold": 0.76},
+    "category2": {"folder": "style/CLIP2", "threshold": 0.86},
+    "category3": {"folder": "style/CLIP3", "threshold": 0.86},
+}
+
+Add or remove categories by editing this dictionary. Each entry needs a subfolder path (relative to data/) and a cosine similarity threshold. Higher = stricter.
+
+"Style matching" here means "CLIP visual similarity to your reference images" — it is not a general aesthetic classifier. The quality of results depends entirely on what you put in each folder.
 
 This is particularly effective against AI-generated images that mimic a specific artist's style. Drop a few examples of the artist's work into data/style/ and CLIP will flag visually similar outputs, even if they've never been posted before. Unlike hash matching, which only catches known images, style matching generalizes — one set of references can catch an unlimited number of new generations in that style.
 
@@ -153,10 +165,16 @@ All endpoints are served at `http://127.0.0.1:5150`.
 Status and counts.
 
 ```json
-{ "status": "running", "hashes": 142, "styles": 5 }
+{
+  "status": "running",
+  "hashes": 142,
+  "categories": {
+    "category1": { "references": 5, "threshold": 0.76 },
+    "category2": { "references": 3, "threshold": 0.86 },
+    "category3": { "references": 2, "threshold": 0.86 }
+  }
+}
 ```
-
-`styles` is the number of reference images that were successfully embedded from `data/style/`.
 
 ### `POST /check`
 
@@ -183,7 +201,7 @@ Check a thumbnail against the hash DB and style DB.
 **Response (style match):**
 
 ```json
-{ "swap": true, "method": "style", "similarity": 0.812 }
+{ "swap": true, "method": "style", "category": "category1", "similarity": 0.812 }
 ```
 
 **Response (bad input):**
@@ -237,7 +255,7 @@ Reloads hashes from disk (including ingesting and deleting loose files in `data/
 **Response:**
 
 ```json
-{ "count": 143, "styles": 5 }
+{ "count": 143, "categories": { "category1": 5, "category2": 3, "category3": 2 } }
 ```
 
 ---
@@ -249,7 +267,7 @@ These constants are at the top of `server.py`:
 | Constant | Default | What it does |
 |---|---|---|
 | `THRESHOLD` | `10` | Max hamming distance for a dHash match. Lower = stricter. `5` catches near-exact duplicates only. `15` catches heavy recompression but risks false positives. |
-| `STYLE_THRESHOLD` | `0.74` | Min CLIP cosine similarity for a style match. Higher = stricter. `0.80`+ requires very close matches. `0.70` casts a wider net but may flag unrelated images. |
+| `STYLE_CATEGORIES` | `(see server.py)` | Dictionary of style categories. Each entry defines a folder of reference images and a threshold for CLIP cosine similarity. Higher threshold = stricter matching. |
 | `HASH_SIZE` | `8` | dHash dimension (8 → 64-bit hashes). Increasing to `16` gives finer discrimination but needs a proportionally lower `THRESHOLD`. |
 
 ---
