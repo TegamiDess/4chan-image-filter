@@ -13,8 +13,8 @@ from transformers import CLIPProcessor, CLIPModel
 from pybktree import BKTree
 
 BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
-DATA_FOLDER = os.path.join(BASE_FOLDER, "gbfg")
-REPLACEMENT_FOLDER = os.path.join(DATA_FOLDER, "Io")
+DATA_FOLDER = os.path.join(BASE_FOLDER, "data")
+REPLACEMENT_FOLDER = os.path.join(DATA_FOLDER, "replacements")
 STYLE_FOLDER = os.path.join(DATA_FOLDER, "style")
 HASH_EXPORT_PATH = os.path.join(DATA_FOLDER, "hashes.json")
 HASH_SIZE = 8
@@ -23,9 +23,9 @@ VALID_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 MIME_MAP = {'.jpg': 'jpeg', '.jpeg': 'jpeg', '.png': 'png', '.gif': 'gif', '.webp': 'webp'}
 
 STYLE_CATEGORIES = {
-    "slop1":       {"folder": "style/slop1",       "threshold": 0.76},
-    "slop2": {"folder": "style/slop2",  "threshold": 0.86},
-    "furpedo":  {"folder": "style/furpedo",   "threshold": 0.86},
+    "category1":       {"folder": "style/CLIP1",       "threshold": 0.76},
+    "category2": {"folder": "style/CLIP2",  "threshold": 0.86},
+    "category3":  {"folder": "style/CLIP3",   "threshold": 0.86},
 }
 
 app = Flask(__name__)
