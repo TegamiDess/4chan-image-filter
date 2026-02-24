@@ -145,6 +145,8 @@ No configuration needed — it connects to `127.0.0.1:5150` by default.
 | **Alt+Click a thumbnail** | Adds its dHash to the ban list and swaps/removes the post immediately. |
 | **Add images to `data/style/`** | POST to `/reload_hashes` (or restart the server) to pick up new CLIP references. |
 | **Drop images in `data/`** | POST to `/reload_hashes` (or restart the server) to ingest new hashes. See warning below. |
+| **Click the filter icon** | Opens the control panel. Adjust hash and CLIP thresholds in real-time. Toggle scanning on/off. |
+| **Hover a thumbnail** | Shows per-category CLIP similarity scores (appears after the page has been scanned). |
 
 > **⚠️ Destructive ingest:** Images placed **loose** in the top-level `data/` directory (not in a subfolder) are hashed, added to the database, **then permanently deleted**. Subfolders like `replacements/` and `style/` are never touched. Always **copy**, never move, originals here.
 
