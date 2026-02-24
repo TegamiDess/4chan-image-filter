@@ -170,6 +170,8 @@ def check():
     except Exception:
         return jsonify({"swap": False})
 
+    result = {"swap": False, "scores": {}}
+
     try:
         h = str(imagehash.dhash(img, hash_size=HASH_SIZE))
         with hash_lock:
@@ -177,7 +179,9 @@ def check():
         if matches:
             print(f"[Hash] Match found: {h}")
             img.close()
-            return jsonify({"swap": True, "method": "hash"})
+            result["swap"] = True
+            result["method"] = "hash"
+            return jsonify(result)
     except Exception as e:
         print(f"[Hash] Error: {e}")
 
@@ -185,16 +189,21 @@ def check():
         rgb = img.convert("RGB")
         with clip_lock:
             emb = get_clip_embedding(rgb)
-        matched, category, sim = clip_check(emb)
-        if matched:
-            print(f"[CLIP] {category} match, similarity: {sim:.3f}")
-            img.close()
-            return jsonify({"swap": True, "method": "style", "category": category, "similarity": sim})
+        for name, cat in style_data.items():
+            sims = (emb @ cat["embeddings"].T).squeeze(0)
+            max_sim = sims.max().item()
+            result["scores"][name] = round(max_sim, 4)
+            if not result["swap"] and max_sim > cat["threshold"]:
+                result["swap"] = True
+                result["method"] = "style"
+                result["category"] = name
+                result["similarity"] = max_sim
+                print(f"[CLIP] {name} match, similarity: {max_sim:.3f}")
     except Exception as e:
         print(f"[CLIP] Error: {e}")
 
     img.close()
-    return jsonify({"swap": False})
+    return jsonify(result)
 
 
 @app.route('/reload_hashes', methods=['POST'])
@@ -243,6 +252,32 @@ def save_thumbnail():
     except Exception as e:
         print(f"[Save] Failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/config', methods=['GET'])
+def get_config():
+    return jsonify({
+        "scanning": True,
+        "threshold": THRESHOLD,
+        "categories": {
+            name: cat["threshold"] for name, cat in style_data.items()
+        }
+    })
+
+
+@app.route('/config', methods=['POST'])
+def update_config():
+    global THRESHOLD
+    data = request.json
+    if 'threshold' in data:
+        THRESHOLD = int(data['threshold'])
+        print(f"[Config] Hash threshold updated to {THRESHOLD}")
+    for name, val in data.get('categories', {}).items():
+        if name in style_data:
+            style_data[name]["threshold"] = float(val)
+            print(f"[Config] {name} threshold updated to {val}")
+    return jsonify({"ok": True})
+
 
 
 if __name__ == '__main__':
